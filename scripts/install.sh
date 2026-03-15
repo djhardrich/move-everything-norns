@@ -22,7 +22,7 @@ fi
 echo "--- Deploying module to $REMOTE_MODULE ---"
 ssh "root@$DEVICE_HOST" "mkdir -p $REMOTE_MODULE"
 scp -r "$DIST_DIR/"* "root@$DEVICE_HOST:$REMOTE_MODULE/"
-ssh "root@$DEVICE_HOST" "chmod +x $REMOTE_MODULE/start-norns.sh $REMOTE_MODULE/stop-norns.sh && chown -R ableton:users $REMOTE_MODULE"
+ssh "root@$DEVICE_HOST" "chmod +x $REMOTE_MODULE/start-norns.sh $REMOTE_MODULE/stop-norns.sh $REMOTE_MODULE/restart-norns.sh && chown -R ableton:users $REMOTE_MODULE"
 
 # ── Install pw-helper (setuid root) ──
 PW_HELPER="$REPO_ROOT/build/pw-helper"
@@ -46,6 +46,17 @@ if [ -f "$INPUT_BRIDGE" ]; then
     echo "norns-input-bridge installed"
 fi
 
+# ── Install jack-fifo-bridge to chroot ──
+JACK_BRIDGE="$REPO_ROOT/build/jack-fifo-bridge"
+if [ -f "$JACK_BRIDGE" ]; then
+    echo ""
+    echo "--- Installing jack-fifo-bridge to chroot ---"
+    ssh "root@$DEVICE_HOST" "mkdir -p $REMOTE_CHROOT/usr/local/bin"
+    scp "$JACK_BRIDGE" "root@$DEVICE_HOST:$REMOTE_CHROOT/usr/local/bin/jack-fifo-bridge"
+    ssh "root@$DEVICE_HOST" "chmod +x $REMOTE_CHROOT/usr/local/bin/jack-fifo-bridge"
+    echo "jack-fifo-bridge installed"
+fi
+
 if [ ! -f "$PW_HELPER" ]; then
     echo ""
     echo "NOTE: pw-helper not found. Norns must be started manually as root."
@@ -61,17 +72,25 @@ export DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/pw-runtime-1/dbus-pw
 PROFEOF
 chmod 644 $REMOTE_CHROOT/etc/profile.d/pipewire.sh"
 
-# ── Disable PipeWire RT scheduling ──
+# ── Install PipeWire audio config (rate, quantum, no-RT) ──
 echo ""
-echo "--- Installing PipeWire no-RT config ---"
-ssh "root@$DEVICE_HOST" "mkdir -p $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d && cat > $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d/no-rt.conf << 'RTEOF'
+echo "--- Installing PipeWire config ---"
+ssh "root@$DEVICE_HOST" "mkdir -p $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d
+rm -f $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d/no-rt.conf
+cat > $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d/move-audio.conf << 'PWEOF'
 context.properties = {
-    module.rt = false
+    module.rt                   = false
+    default.clock.rate          = 44100
+    default.clock.allowed-rates = [ 44100 ]
+    default.clock.quantum       = 1024
+    default.clock.min-quantum   = 1024
+    default.clock.max-quantum   = 1024
 }
-RTEOF
-chmod 644 $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d/no-rt.conf
+PWEOF
+chmod 644 $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d/move-audio.conf
 mkdir -p $REMOTE_CHROOT/etc/wireplumber/wireplumber.conf.d
-cp $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d/no-rt.conf $REMOTE_CHROOT/etc/wireplumber/wireplumber.conf.d/no-rt.conf
+cp $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d/move-audio.conf $REMOTE_CHROOT/etc/wireplumber/wireplumber.conf.d/move-audio.conf
+mkdir -p $REMOTE_CHROOT/etc/security/limits.d
 echo '# Disabled - RT scheduling conflicts with Move audio engine' > $REMOTE_CHROOT/etc/security/limits.d/25-pw-rlimits.conf"
 
 # ── Deploy patches and setup scripts ──

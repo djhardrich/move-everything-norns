@@ -37,13 +37,16 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <stdbool.h>
+#include <sys/mman.h>
+
+#include "../shm_audio.h"
 
 /* ── Constants ────────────────────────────────────────── */
 
-#define RING_SECONDS  4
+#define RING_SECONDS  1
 #define RING_SAMPLES  (MOVE_AUDIO_SAMPLE_RATE * 2 * RING_SECONDS)
 #define AUDIO_IDLE_MS 3000
-#define FIFO_PIPE_SZ  (1024 * 1024)  /* 1MB kernel FIFO buffer */
+#define FIFO_PIPE_SZ  (128 * 1024)  /* 128KB kernel FIFO buffer — fallback only, SHM preferred */
 
 /* FIFOs are created at the resolved /tmp path (following symlinks).
  * On Move, /tmp → /var/tmp → /var/volatile/tmp.  The chroot bind-mounts
@@ -131,6 +134,10 @@ typedef struct {
 
     /* Per-instance check counter (not static — avoids multi-instance bugs) */
     int check_counter;
+
+    /* SHM audio ring (zero-copy path, replaces FIFO for audio) */
+    shm_audio_t *shm_audio;
+    char shm_audio_path[256];
 } norns_instance_t;
 
 static int g_instance_counter = 0;
@@ -279,11 +286,41 @@ static int create_fifo(norns_instance_t *inst) {
     (void)fcntl(inst->fifo_playback_fd, F_SETPIPE_SZ, FIFO_PIPE_SZ);
 
     pw_log("create_fifo: OK");
+
+    /* Create SHM ring for zero-copy audio (jack-fifo-bridge will use this) */
+    snprintf(inst->shm_audio_path, sizeof(inst->shm_audio_path),
+             SHM_AUDIO_PATH_FMT, inst->slot);
+    {
+        int shm_fd = open(inst->shm_audio_path,
+                          O_RDWR | O_CREAT | O_TRUNC, 0666);
+        if (shm_fd >= 0) {
+            (void)fchmod(shm_fd, 0666);  /* override umask */
+            if (ftruncate(shm_fd, SHM_AUDIO_FILE_SIZE) == 0) {
+                void *p = mmap(NULL, SHM_AUDIO_FILE_SIZE,
+                               PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+                if (p != MAP_FAILED) {
+                    inst->shm_audio = (shm_audio_t *)p;
+                    shm_audio_init(inst->shm_audio, MOVE_AUDIO_SAMPLE_RATE);
+                    pw_log("create_fifo: SHM ring created (zero-copy)");
+                }
+            }
+            close(shm_fd);
+        }
+        if (!inst->shm_audio)
+            pw_log("create_fifo: SHM setup failed, FIFO-only mode");
+    }
+
     return 0;
 }
 
 static void close_fifo(norns_instance_t *inst) {
     if (!inst) return;
+    if (inst->shm_audio) {
+        munmap(inst->shm_audio, SHM_AUDIO_FILE_SIZE);
+        inst->shm_audio = NULL;
+    }
+    if (inst->shm_audio_path[0])
+        (void)unlink(inst->shm_audio_path);
     if (inst->fifo_playback_fd >= 0) {
         close(inst->fifo_playback_fd);
         inst->fifo_playback_fd = -1;
@@ -910,6 +947,7 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
              module_dir ? module_dir : ".");
     inst->gain = 1.0f;
     inst->fifo_playback_fd = -1;
+    inst->shm_audio = NULL;
     inst->fifo_midi_in_fd = -1;
     inst->fifo_midi_out_fd = -1;
     inst->midi_out_buf_len = 0;
@@ -1191,10 +1229,26 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
     if (!inst) return;
 
     check_pw_alive(inst);
-    pump_pipe(inst);
     pump_midi_out(inst);
 
-    got = ring_pop(inst, out_interleaved_lr, needed);
+    /* SHM zero-copy path: read directly from shared memory ring.
+     * No syscalls, no intermediate ring buffer, no FIFO overhead. */
+    if (inst->shm_audio) {
+        got = shm_read(inst->shm_audio, out_interleaved_lr, (uint32_t)frames);
+        got *= 2;  /* shm_read returns frames, we need sample count */
+        if (got > 0) {
+            inst->last_audio_ms = now_ms();
+            inst->receiving_audio = true;
+        } else if (inst->receiving_audio && inst->last_audio_ms > 0) {
+            uint64_t now = now_ms();
+            if (now > inst->last_audio_ms && (now - inst->last_audio_ms) > AUDIO_IDLE_MS)
+                inst->receiving_audio = false;
+        }
+    } else {
+        /* FIFO fallback */
+        pump_pipe(inst);
+        got = ring_pop(inst, out_interleaved_lr, needed);
+    }
 
     if (inst->gain != 1.0f && got > 0) {
         for (i = 0; i < got; i++) {

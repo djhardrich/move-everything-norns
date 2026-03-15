@@ -50,9 +50,10 @@ echo "=== Cross-compiling jack-fifo-bridge ==="
 echo "=== Assembling module package ==="
 cp src/module.json  build/module/
 cp src/ui.js        build/module/
-cp src/start-norns.sh  build/module/
-cp src/stop-norns.sh   build/module/
-chmod +x build/module/start-norns.sh build/module/stop-norns.sh
+cp src/start-norns.sh    build/module/
+cp src/stop-norns.sh     build/module/
+cp src/restart-norns.sh  build/module/
+chmod +x build/module/start-norns.sh build/module/stop-norns.sh build/module/restart-norns.sh
 
 mkdir -p build/module/bin
 cp build/pw-helper           build/module/bin/

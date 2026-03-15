@@ -36,7 +36,7 @@ done
 echo "--- Installing apt packages ---"
 chroot "$CHROOT" apt-get update
 chroot "$CHROOT" apt-get install -y --no-install-recommends \
-    supercollider-server supercollider-language sc3-plugins-server \
+    supercollider-server supercollider-language sc3-plugins-server sc3-plugins-language \
     liblua5.3-0 libcairo2 liblo7 libevdev2 \
     libasound2t64 libsndfile1 libjack-jackd2-0 \
     libnanomsg5 libavahi-compat-libdnssd1 \
@@ -141,6 +141,22 @@ chrt -o 0 chroot "$CHROOT" su - move -c '
     fi
 '
 
+echo "--- Creating sclang_conf.yaml ---"
+# sclang needs explicit include paths to find norns core classes and
+# user-installed engines in dust/code/. Without this, sclang only loads
+# the system SC class library and no norns engines are available.
+cat > "$NORNS_HOME/norns/sclang_conf.yaml" << 'SCCONF'
+includePaths:
+    - /home/we/norns/sc/core
+    - /home/we/norns/sc/engines
+    - /home/we/norns/sc
+    - /home/we/dust
+excludePaths:
+    []
+postInlinePaths: []
+SCCONF
+chown 1000:1000 "$NORNS_HOME/norns/sclang_conf.yaml"
+
 echo "--- Configuring scsynth for 44100 Hz ---"
 mkdir -p "$NORNS_HOME/norns/sc"
 cat > "$NORNS_HOME/norns/sc/startup.scd" << 'SCDEOF'
@@ -155,13 +171,31 @@ echo "--- Removing incompatible 32-bit SC plugins ---"
 rm -rf "$NORNS_HOME/.local/share/SuperCollider/Extensions/PortedPlugins" 2>/dev/null
 echo "  Cleaned incompatible plugins"
 
-echo "--- Configuring PipeWire no-RT ---"
+echo "--- Ensuring /etc/hosts for localhost resolution ---"
+# sclang's OSC library needs localhost to resolve for engine registration.
+# A chroot may not have /etc/hosts if it wasn't created by debootstrap.
+if [ ! -f "$CHROOT/etc/hosts" ] || ! grep -q '127.0.0.1' "$CHROOT/etc/hosts"; then
+    cat > "$CHROOT/etc/hosts" << 'HOSTSEOF'
+127.0.0.1	localhost
+::1		localhost
+HOSTSEOF
+fi
+
+echo "--- Configuring PipeWire ---"
+# All PipeWire context.properties in ONE file — multiple files with the
+# same section key can overwrite each other instead of merging.
 mkdir -p "$CHROOT/etc/pipewire/pipewire.conf.d"
-cat > "$CHROOT/etc/pipewire/pipewire.conf.d/no-rt.conf" << 'RTEOF'
+rm -f "$CHROOT/etc/pipewire/pipewire.conf.d/no-rt.conf"
+cat > "$CHROOT/etc/pipewire/pipewire.conf.d/move-audio.conf" << 'PWEOF'
 context.properties = {
-    module.rt = false
+    module.rt                   = false
+    default.clock.rate          = 44100
+    default.clock.allowed-rates = [ 44100 ]
+    default.clock.quantum       = 1024
+    default.clock.min-quantum   = 1024
+    default.clock.max-quantum   = 1024
 }
-RTEOF
+PWEOF
 
 echo ""
 echo "=== Norns Setup Complete ==="

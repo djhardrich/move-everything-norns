@@ -66,6 +66,21 @@ int main(int argc, char *argv[]) {
         perror("pw-helper: execl failed");
         return 1;
 
+    } else if (strcmp(argv[1], "restart") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "Usage: pw-helper restart <slot>\n");
+            return 1;
+        }
+        int slot = atoi(argv[2]);
+        if (slot < 1 || slot > 8) {
+            fprintf(stderr, "pw-helper: invalid slot %d\n", slot);
+            return 1;
+        }
+        execl("/bin/sh", "sh", MODULE_DIR "/restart-norns.sh",
+              argv[2], (char *)NULL);
+        perror("pw-helper: execl failed");
+        return 1;
+
     } else if (strcmp(argv[1], "mount") == 0) {
         /* Ensure /tmp is bind-mounted into the chroot.
          * Called early by the DSP plugin before creating FIFOs. */

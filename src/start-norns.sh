@@ -119,6 +119,24 @@ wait_for() {
         sleep 2
     fi
 
+    # Start matron BEFORE sclang — matron must be listening on port 8888
+    # when sclang initializes, because Crone.sc sends engine registration
+    # OSC messages (/engine/register) to matron during startup. If matron
+    # isn't running yet, those UDP packets are lost and matron ends up with
+    # an empty engine list → "error: missing ENGINE_NAME" on every script.
+    if [ -x "$CHROOT/home/we/norns/build/matron/matron" ]; then
+        chrt -o 0 chroot "$CHROOT" su - move -c "
+            export XDG_RUNTIME_DIR=$RUNTIME_DIR
+            export DBUS_SESSION_BUS_ADDRESS=unix:path=${RUNTIME_DIR}/dbus-pw
+            export NORNS_SCREEN_FIFO=/tmp/norns-screen-${SLOT}
+            export NORNS_INPUT_FIFO=/tmp/norns-input-${SLOT}
+            cd /home/we/norns
+            nohup pw-jack-physical ./build/ws-wrapper/ws-wrapper ws://*:5555 ./build/matron/matron >/dev/null 2>&1 &
+            echo \$! > /tmp/norns-pids-${SLOT}/matron.pid
+        "
+        sleep 1
+    fi
+
     # Start sclang via ws-wrapper (boots scsynth, loads Crone.sc, exposes SC REPL on port 5556)
     # sclang manages scsynth's lifecycle and the norns engine system
     if chroot "$CHROOT" which sclang >/dev/null 2>&1; then
@@ -127,7 +145,7 @@ wait_for() {
             export DBUS_SESSION_BUS_ADDRESS=unix:path=${RUNTIME_DIR}/dbus-pw
             export QT_QPA_PLATFORM=offscreen
             cd /home/we/norns
-            nohup pw-jack-physical ./build/ws-wrapper/ws-wrapper ws://*:5556 sclang >/dev/null 2>&1 &
+            nohup pw-jack-physical ./build/ws-wrapper/ws-wrapper ws://*:5556 sclang -l /home/we/norns/sclang_conf.yaml >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/sclang.pid
         "
         # Wait for scsynth to connect to JACK (visible as SuperCollider ports).
@@ -159,10 +177,9 @@ wait_for() {
         echo "WARN: no SuperCollider found, softcut-only mode"
     fi
 
-    # Send /crone/ready OSC to matron after SC initializes.
-    # sclang's UDP networking is broken in chroot (no OSC listener),
-    # so matron never receives the ready response from Crone.sc.
-    # We send it manually once SuperCollider JACK ports appear.
+    # Send /crone/ready OSC to matron as a fallback.
+    # Normally sclang (Crone.sc) sends this after engine registration,
+    # but if UDP is unreliable in the chroot, we send it manually.
     (
         _cr_wait=0
         while [ $_cr_wait -lt 60 ]; do
@@ -198,20 +215,6 @@ s.close()
         done
     ) &
 
-    # Start matron (via ws-wrapper on port 5555 for Maiden REPL)
-    if [ -x "$CHROOT/home/we/norns/build/matron/matron" ]; then
-        chrt -o 0 chroot "$CHROOT" su - move -c "
-            export XDG_RUNTIME_DIR=$RUNTIME_DIR
-            export DBUS_SESSION_BUS_ADDRESS=unix:path=${RUNTIME_DIR}/dbus-pw
-            export NORNS_SCREEN_FIFO=/tmp/norns-screen-${SLOT}
-            export NORNS_INPUT_FIFO=/tmp/norns-input-${SLOT}
-            cd /home/we/norns
-            nohup pw-jack-physical ./build/ws-wrapper/ws-wrapper ws://*:5555 ./build/matron/matron >/dev/null 2>&1 &
-            echo \$! > /tmp/norns-pids-${SLOT}/matron.pid
-        "
-        sleep 1
-    fi
-
     # Start norns-input-bridge (sends OSC to matron instead of FIFO,
     # because matron's GPIO input driver isn't initialized on Move)
     MIDI_IN_FIFO="/tmp/midi-to-chroot-${SLOT}"
@@ -241,6 +244,14 @@ s.close()
             echo \$! > /tmp/norns-pids-${SLOT}/maiden.pid
         "
     fi
+
+    # Renice audio-critical processes to highest non-RT priority.
+    # (SCHED_RR/FIFO gets processes killed by Move's watchdog.)
+    for proc in pipewire wireplumber crone matron sclang scsynth jack-fifo-bridge; do
+        for pid in $(chroot "$CHROOT" pgrep -x "$proc" 2>/dev/null); do
+            renice -n -20 -p "$pid" >/dev/null 2>&1
+        done
+    done
 
     echo "Norns started in chroot (slot $SLOT)"
 ) &
