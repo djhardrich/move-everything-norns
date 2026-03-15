@@ -14,13 +14,16 @@ Norns runs inside a Debian chroot alongside Move's native firmware. Audio, MIDI,
 
 ```bash
 # Build the module (requires Docker for ARM64 cross-compilation)
+# (automatically cleans previous build artifacts)
 ./scripts/build.sh
 
 # Deploy to Move (SSH must be configured)
-DEVICE_HOST=move.local ./scripts/install.sh
+# Replace move.local with your device's IP address if mDNS is not available
+./scripts/install.sh
 
 # Install Norns into the chroot (run once, on the Move)
-ssh root@move.local 'NORNS_BUILD_FROM_SOURCE=1 sh /data/setup-norns.sh'
+# Uses pre-built binaries (~3 minutes: ~2.5 min apt packages + ~15 sec download)
+ssh root@move.local 'sh /data/setup-norns.sh'
 ```
 
 Load **Norns** from the Tools menu in Move Everything.

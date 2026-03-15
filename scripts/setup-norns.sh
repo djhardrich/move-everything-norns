@@ -81,8 +81,8 @@ if [ "$BUILD_FROM_SOURCE" = "1" ]; then
     if [ -f "$CHROOT/home/we/norns/patches/apply-move-patches.sh" ]; then
         chrt -o 0 chroot "$CHROOT" su - move -c \
             "cd /home/we/norns && sh patches/apply-move-patches.sh"
-    elif [ -f /data/UserData/move-anything/modules/sound_generators/norns/patches/apply-move-patches.sh ]; then
-        cp /data/UserData/move-anything/modules/sound_generators/norns/patches/apply-move-patches.sh \
+    elif [ -f /data/UserData/move-anything/modules/tools/norns/patches/apply-move-patches.sh ]; then
+        cp /data/UserData/move-anything/modules/tools/norns/patches/apply-move-patches.sh \
             "$CHROOT/tmp/apply-move-patches.sh"
         chrt -o 0 chroot "$CHROOT" su - move -c \
             "cd /home/we/norns && sh /tmp/apply-move-patches.sh"
@@ -114,11 +114,13 @@ else
         exit 1
     fi
 
-    cd "$NORNS_HOME"
-    curl -fsSL "$PREBUILT_URL" -o /tmp/norns-prebuilt.tar.gz
-    tar xzf /tmp/norns-prebuilt.tar.gz
-    rm -f /tmp/norns-prebuilt.tar.gz
-    chown -R 1000:1000 "$NORNS_HOME/norns" "$NORNS_HOME/maiden"
+    chroot "$CHROOT" sh -c "
+        cd /home/we
+        curl -fsSL '$PREBUILT_URL' -o /tmp/norns-prebuilt.tar.gz
+        tar xzf /tmp/norns-prebuilt.tar.gz
+        rm -f /tmp/norns-prebuilt.tar.gz
+        chown -R 1000:1000 /home/we/norns /home/we/maiden
+    "
     echo "  Pre-built binaries installed"
 fi
 

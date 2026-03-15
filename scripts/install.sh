@@ -4,45 +4,49 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 MODULE_ID="norns"
+# Replace move.local with your device's IP address if mDNS is not available
 DEVICE_HOST="${DEVICE_HOST:-move.local}"
 REMOTE_MODULE="/data/UserData/move-anything/modules/tools/$MODULE_ID"
 REMOTE_CHROOT="/data/UserData/pw-chroot"
 DIST_DIR="$REPO_ROOT/dist/$MODULE_ID"
 
+USER_SSH="ableton@$DEVICE_HOST"
+ROOT_SSH="root@$DEVICE_HOST"
+
 echo "=== Installing Norns Module ==="
 echo "Device: $DEVICE_HOST"
 echo ""
 
-# ── Install module files ──
+# ── Install module files (ableton owns /data/UserData) ──
 if [ ! -d "$DIST_DIR" ]; then
     echo "Error: $DIST_DIR not found. Run ./scripts/build.sh first."
     exit 1
 fi
 
 echo "--- Deploying module to $REMOTE_MODULE ---"
-ssh "root@$DEVICE_HOST" "mkdir -p $REMOTE_MODULE"
-scp -r "$DIST_DIR/"* "root@$DEVICE_HOST:$REMOTE_MODULE/"
-ssh "root@$DEVICE_HOST" "chmod +x $REMOTE_MODULE/start-norns.sh $REMOTE_MODULE/stop-norns.sh && chown -R ableton:users $REMOTE_MODULE"
+ssh "$USER_SSH" "mkdir -p $REMOTE_MODULE"
+scp -r "$DIST_DIR/"* "$USER_SSH:$REMOTE_MODULE/"
+ssh "$USER_SSH" "chmod +x $REMOTE_MODULE/start-norns.sh $REMOTE_MODULE/stop-norns.sh"
 
-# ── Install pw-helper (setuid root) ──
+# ── Install pw-helper (setuid root — requires root) ──
 PW_HELPER="$REPO_ROOT/build/pw-helper"
 if [ -f "$PW_HELPER" ]; then
     echo ""
     echo "--- Installing pw-helper (setuid root) ---"
-    ssh "root@$DEVICE_HOST" "mkdir -p /data/UserData/move-anything/bin"
-    scp "$PW_HELPER" "root@$DEVICE_HOST:/data/UserData/move-anything/bin/pw-helper-norns"
-    ssh "root@$DEVICE_HOST" "chown root:root /data/UserData/move-anything/bin/pw-helper-norns && chmod 4755 /data/UserData/move-anything/bin/pw-helper-norns"
+    ssh "$ROOT_SSH" "mkdir -p /data/UserData/move-anything/bin"
+    scp "$PW_HELPER" "$ROOT_SSH:/data/UserData/move-anything/bin/pw-helper-norns"
+    ssh "$ROOT_SSH" "chown root:root /data/UserData/move-anything/bin/pw-helper-norns && chmod 4755 /data/UserData/move-anything/bin/pw-helper-norns"
     echo "pw-helper-norns installed"
 fi
 
-# ── Install norns-input-bridge to chroot ──
+# ── Install norns-input-bridge to chroot (root-owned paths) ──
 INPUT_BRIDGE="$REPO_ROOT/build/norns-input-bridge"
 if [ -f "$INPUT_BRIDGE" ]; then
     echo ""
     echo "--- Installing norns-input-bridge to chroot ---"
-    ssh "root@$DEVICE_HOST" "mkdir -p $REMOTE_CHROOT/usr/local/bin"
-    scp "$INPUT_BRIDGE" "root@$DEVICE_HOST:$REMOTE_CHROOT/usr/local/bin/norns-input-bridge"
-    ssh "root@$DEVICE_HOST" "chmod +x $REMOTE_CHROOT/usr/local/bin/norns-input-bridge"
+    ssh "$ROOT_SSH" "mkdir -p $REMOTE_CHROOT/usr/local/bin"
+    scp "$INPUT_BRIDGE" "$ROOT_SSH:$REMOTE_CHROOT/usr/local/bin/norns-input-bridge"
+    ssh "$ROOT_SSH" "chmod +x $REMOTE_CHROOT/usr/local/bin/norns-input-bridge"
     echo "norns-input-bridge installed"
 fi
 
@@ -51,20 +55,20 @@ if [ ! -f "$PW_HELPER" ]; then
     echo "NOTE: pw-helper not found. Norns must be started manually as root."
 fi
 
-# ── Install chroot profile ──
+# ── Install chroot profile (root-owned path) ──
 echo ""
 echo "--- Installing chroot profile ---"
-ssh "root@$DEVICE_HOST" "mkdir -p $REMOTE_CHROOT/etc/profile.d && cat > $REMOTE_CHROOT/etc/profile.d/pipewire.sh << 'PROFEOF'
+ssh "$ROOT_SSH" "mkdir -p $REMOTE_CHROOT/etc/profile.d && cat > $REMOTE_CHROOT/etc/profile.d/pipewire.sh << 'PROFEOF'
 # Auto-set PipeWire environment for Move bridge
 export XDG_RUNTIME_DIR=/tmp/pw-runtime-1
 export DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/pw-runtime-1/dbus-pw
 PROFEOF
 chmod 644 $REMOTE_CHROOT/etc/profile.d/pipewire.sh"
 
-# ── Disable PipeWire RT scheduling ──
+# ── Disable PipeWire RT scheduling (root-owned path) ──
 echo ""
 echo "--- Installing PipeWire no-RT config ---"
-ssh "root@$DEVICE_HOST" "mkdir -p $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d && cat > $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d/no-rt.conf << 'RTEOF'
+ssh "$ROOT_SSH" "mkdir -p $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d && cat > $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d/no-rt.conf << 'RTEOF'
 context.properties = {
     module.rt = false
 }
@@ -72,20 +76,21 @@ RTEOF
 chmod 644 $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d/no-rt.conf
 mkdir -p $REMOTE_CHROOT/etc/wireplumber/wireplumber.conf.d
 cp $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d/no-rt.conf $REMOTE_CHROOT/etc/wireplumber/wireplumber.conf.d/no-rt.conf
+mkdir -p $REMOTE_CHROOT/etc/security/limits.d
 echo '# Disabled - RT scheduling conflicts with Move audio engine' > $REMOTE_CHROOT/etc/security/limits.d/25-pw-rlimits.conf"
 
-# ── Deploy patches and setup scripts ──
+# ── Deploy patches (root — chroot path) and setup scripts (ableton — /data/) ──
 echo ""
 echo "--- Deploying patches and setup scripts ---"
-ssh "root@$DEVICE_HOST" "mkdir -p $REMOTE_MODULE/patches"
-scp "$REPO_ROOT/patches/apply-move-patches.sh" "root@$DEVICE_HOST:$REMOTE_MODULE/patches/"
-scp "$REPO_ROOT/scripts/setup-norns.sh" "root@$DEVICE_HOST:/data/setup-norns.sh"
-scp "$REPO_ROOT/scripts/package-norns-chroot.sh" "root@$DEVICE_HOST:/data/package-norns-chroot.sh"
-ssh "root@$DEVICE_HOST" "chmod +x $REMOTE_MODULE/patches/apply-move-patches.sh /data/setup-norns.sh /data/package-norns-chroot.sh"
+ssh "$ROOT_SSH" "mkdir -p $REMOTE_MODULE/patches"
+scp "$REPO_ROOT/patches/apply-move-patches.sh" "$ROOT_SSH:$REMOTE_MODULE/patches/"
+scp "$REPO_ROOT/scripts/setup-norns.sh" "$ROOT_SSH:/data/setup-norns.sh"
+scp "$REPO_ROOT/scripts/package-norns-chroot.sh" "$ROOT_SSH:/data/package-norns-chroot.sh"
+ssh "$ROOT_SSH" "chmod +x $REMOTE_MODULE/patches/apply-move-patches.sh /data/setup-norns.sh /data/package-norns-chroot.sh"
 
 # ── Check if Norns is installed ──
 echo ""
-if ssh "root@$DEVICE_HOST" "[ -d $REMOTE_CHROOT/home/we/norns ]" 2>/dev/null; then
+if ssh "$ROOT_SSH" "[ -d $REMOTE_CHROOT/home/we/norns ]" 2>/dev/null; then
     echo "Norns detected in chroot."
 else
     echo "NOTE: Norns not yet installed in chroot."
