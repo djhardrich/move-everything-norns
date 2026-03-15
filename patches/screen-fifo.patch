@@ -1,0 +1,48 @@
+--- Description ---
+Patch matron screen output to write framebuffer via FIFO instead of SPI.
+
+Target file: matron/src/hardware/screen.c (or ssd1322.c depending on norns version)
+
+Environment variable: NORNS_SCREEN_FIFO (path to FIFO, e.g. /tmp/norns-screen-1)
+
+Changes:
+
+1. Add includes at top:
+   #include <fcntl.h>
+   #include <errno.h>
+
+2. Add static variable:
+   static int screen_fifo_fd = -1;
+
+3. In screen init (or first update call):
+   const char *fifo = getenv("NORNS_SCREEN_FIFO");
+   if (fifo) {
+       screen_fifo_fd = open(fifo, O_RDWR | O_NONBLOCK);
+   }
+
+4. In screen update function (after Cairo renders to ARGB32 surface):
+   if (screen_fifo_fd >= 0) {
+       cairo_surface_t *surface = cairo_get_target(cr);
+       unsigned char *data = cairo_image_surface_get_data(surface);
+       int stride = cairo_image_surface_get_stride(surface);
+       uint8_t packed[1024];
+       int bi = 0;
+       for (int y = 0; y < 64; y++) {
+           unsigned char *row = data + y * stride;
+           for (int x = 0; x < 128; x += 2) {
+               /* ARGB32: B,G,R,A at offsets 0,1,2,3 */
+               unsigned char *p1 = row + x * 4;
+               unsigned char *p2 = row + (x + 1) * 4;
+               float g1 = (p1[2] * 0.299f + p1[1] * 0.587f + p1[0] * 0.114f) * p1[3] / 255.0f;
+               float g2 = (p2[2] * 0.299f + p2[1] * 0.587f + p2[0] * 0.114f) * p2[3] / 255.0f;
+               uint8_t l1 = (uint8_t)(g1 / 17.0f) & 0xF;
+               uint8_t l2 = (uint8_t)(g2 / 17.0f) & 0xF;
+               packed[bi++] = (l1 << 4) | l2;
+           }
+       }
+       write(screen_fifo_fd, packed, 1024);  /* non-blocking, drop if full */
+   }
+
+5. Skip SPI hardware calls when NORNS_SCREEN_FIFO is set.
+
+6. In screen cleanup: close screen_fifo_fd if >= 0.

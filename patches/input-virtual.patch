@@ -1,0 +1,40 @@
+--- Description ---
+Patch matron input to read virtual encoder/key events from FIFO instead of GPIO.
+
+Target file: matron/src/hardware/input.c (or the encoder/key specific files)
+
+Environment variable: NORNS_INPUT_FIFO (path to FIFO, e.g. /tmp/norns-input-1)
+
+Protocol: 4-byte frames [type:1][id:1][value_lo:1][value_hi:1]
+  - type 0 = encoder delta (id 0-2 = E1-E3, value = signed int16 delta)
+  - type 1 = key state (id 0-2 = K1-K3, value 0=up 1=down)
+
+Changes:
+
+1. In input init:
+   const char *fifo = getenv("NORNS_INPUT_FIFO");
+   if (fifo) {
+       input_fifo_fd = open(fifo, O_RDONLY | O_NONBLOCK);
+       /* Start FIFO poll thread instead of GPIO thread */
+   }
+
+2. FIFO poll thread (replaces GPIO polling):
+   while (running) {
+       uint8_t frame[4];
+       ssize_t n = read(input_fifo_fd, frame, 4);
+       if (n == 4) {
+           uint8_t type = frame[0];
+           uint8_t id = frame[1];
+           int16_t value = (int16_t)(frame[2] | (frame[3] << 8));
+           if (type == 0 && id < 3) {
+               /* Post encoder event: event_post(EVENT_ENC, id, value) */
+           } else if (type == 1 && id < 3) {
+               /* Post key event: event_post(EVENT_KEY, id, value) */
+           }
+       }
+       usleep(1000);  /* 1ms poll interval */
+   }
+
+3. Skip all GPIO/libgpiod/libevdev initialization when NORNS_INPUT_FIFO is set.
+
+4. Coexists with Maiden REPL (Maiden uses OSC on port 10111, unaffected).
