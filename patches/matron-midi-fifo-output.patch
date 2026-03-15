@@ -1,0 +1,47 @@
+--- a/matron/src/device/device_midi.c
++++ b/matron/src/device/device_midi.c
+@@ -1,5 +1,7 @@
+ #include <alsa/asoundlib.h>
+ #include <pthread.h>
++#include <fcntl.h>
++#include <unistd.h>
+ #include <stdio.h>
+
+ #include "../events.h"
+@@ -363,10 +365,36 @@
+     return NULL;
+ }
+
++/* Move: FIFO-based MIDI output — writes length-prefixed messages to
++ * /tmp/midi-from-chroot-<slot>, read by the DSP plugin pump_midi_out(). */
++static int g_midi_out_fifo_fd = -1;
++
++static void midi_out_fifo_ensure(void) {
++    if (g_midi_out_fifo_fd >= 0) return;
++    const char *path = getenv("NORNS_MIDI_OUT_FIFO");
++    if (!path) path = "/tmp/midi-from-chroot-1";
++    g_midi_out_fifo_fd = open(path, O_WRONLY | O_NONBLOCK);
++    if (g_midi_out_fifo_fd >= 0)
++        fprintf(stderr, "MIDI out: opened FIFO %s\n", path);
++}
++
+ ssize_t dev_midi_send(void *self, uint8_t *data, size_t n) {
+     struct dev_midi *midi = (struct dev_midi *)self;
+-    if (midi->handle_out == NULL) {
+-        return -1;
+-    } else {
++    if (midi->handle_out != NULL) {
+         return snd_rawmidi_write(midi->handle_out, data, n);
+     }
++    /* Move: write length-prefixed MIDI to output FIFO */
++    midi_out_fifo_ensure();
++    if (g_midi_out_fifo_fd >= 0 && n > 0 && n <= 0xFFFF) {
++        uint8_t hdr[2];
++        hdr[0] = (uint8_t)(n & 0xFF);
++        hdr[1] = (uint8_t)((n >> 8) & 0xFF);
++        write(g_midi_out_fifo_fd, hdr, 2);
++        write(g_midi_out_fifo_fd, data, n);
++        return (ssize_t)n;
++    }
++    return -1;
+ }

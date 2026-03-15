@@ -41,9 +41,10 @@ typedef struct {
 #define SHM_AUDIO_DATA_BYTES  (SHM_RING_FRAMES * SHM_AUDIO_CHANNELS * sizeof(int16_t))
 #define SHM_AUDIO_FILE_SIZE   (sizeof(shm_audio_t) + SHM_AUDIO_DATA_BYTES)
 
-/* Path pattern — /dev/shm is a real tmpfs (RAM), not the SD card.
+/* Path patterns — /dev/shm is a real tmpfs (RAM), not the SD card.
  * Move's own audio SHM lives here too (move-shadow-pub-audio). */
 #define SHM_AUDIO_PATH_FMT    "/dev/shm/norns-audio-%d"
+#define SHM_AUDIO_IN_PATH_FMT "/dev/shm/norns-audio-in-%d"
 
 /* --- helpers (header-only, used by both sides) --- */
 

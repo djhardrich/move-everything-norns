@@ -138,6 +138,11 @@ typedef struct {
     /* SHM audio ring (zero-copy path, replaces FIFO for audio) */
     shm_audio_t *shm_audio;
     char shm_audio_path[256];
+
+    /* SHM audio input ring (Move mic/line → norns crone) */
+    shm_audio_t *shm_audio_in;
+    char shm_audio_in_path[256];
+    bool audio_in_enabled;   /* off by default — scripts opt in */
 } norns_instance_t;
 
 static int g_instance_counter = 0;
@@ -310,6 +315,28 @@ static int create_fifo(norns_instance_t *inst) {
             pw_log("create_fifo: SHM setup failed, FIFO-only mode");
     }
 
+    /* Create audio INPUT SHM ring (Move mic/line → norns crone).
+     * Always created but only written to when audio_in_enabled is set. */
+    snprintf(inst->shm_audio_in_path, sizeof(inst->shm_audio_in_path),
+             SHM_AUDIO_IN_PATH_FMT, inst->slot);
+    {
+        int shm_fd = open(inst->shm_audio_in_path,
+                          O_RDWR | O_CREAT | O_TRUNC, 0666);
+        if (shm_fd >= 0) {
+            (void)fchmod(shm_fd, 0666);
+            if (ftruncate(shm_fd, SHM_AUDIO_FILE_SIZE) == 0) {
+                void *p = mmap(NULL, SHM_AUDIO_FILE_SIZE,
+                               PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+                if (p != MAP_FAILED) {
+                    inst->shm_audio_in = (shm_audio_t *)p;
+                    shm_audio_init(inst->shm_audio_in, MOVE_AUDIO_SAMPLE_RATE);
+                    pw_log("create_fifo: audio input SHM created");
+                }
+            }
+            close(shm_fd);
+        }
+    }
+
     return 0;
 }
 
@@ -321,6 +348,12 @@ static void close_fifo(norns_instance_t *inst) {
     }
     if (inst->shm_audio_path[0])
         (void)unlink(inst->shm_audio_path);
+    if (inst->shm_audio_in) {
+        munmap(inst->shm_audio_in, SHM_AUDIO_FILE_SIZE);
+        inst->shm_audio_in = NULL;
+    }
+    if (inst->shm_audio_in_path[0])
+        (void)unlink(inst->shm_audio_in_path);
     if (inst->fifo_playback_fd >= 0) {
         close(inst->fifo_playback_fd);
         inst->fifo_playback_fd = -1;
@@ -948,6 +981,8 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
     inst->gain = 1.0f;
     inst->fifo_playback_fd = -1;
     inst->shm_audio = NULL;
+    inst->shm_audio_in = NULL;
+    inst->audio_in_enabled = false;
     inst->fifo_midi_in_fd = -1;
     inst->fifo_midi_out_fd = -1;
     inst->midi_out_buf_len = 0;
@@ -1122,6 +1157,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             memcpy(frame + 2, msg, 4);
             (void)write(inst->fifo_midi_in_fd, frame, 6);
         }
+    } else if (strcmp(key, "audio_in") == 0) {
+        inst->audio_in_enabled = (atoi(val) != 0);
+        pw_log(inst->audio_in_enabled
+               ? "audio input ENABLED" : "audio input disabled");
     } else if (strcmp(key, "dither_mode") == 0) {
         int m = atoi(val);
         if (m >= 0 && m <= 7) inst->dither_mode = m;
@@ -1230,6 +1269,13 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
 
     check_pw_alive(inst);
     pump_midi_out(inst);
+
+    /* Audio input: copy Move's input to SHM for the bridge to pick up.
+     * Only when enabled — avoids feedback and saves CPU for scripts
+     * that don't use audio input. */
+    if (inst->audio_in_enabled && inst->shm_audio_in && g_host && g_host->audio_in) {
+        shm_write(inst->shm_audio_in, g_host->audio_in, (uint32_t)frames);
+    }
 
     /* SHM zero-copy path: read directly from shared memory ring.
      * No syscalls, no intermediate ring buffer, no FIFO overhead. */
