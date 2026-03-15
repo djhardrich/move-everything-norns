@@ -50,6 +50,17 @@ if [ -f "$INPUT_BRIDGE" ]; then
     echo "norns-input-bridge installed"
 fi
 
+# ── Install jack-fifo-bridge to chroot (root-owned paths) ──
+JACK_FIFO_BRIDGE="$REPO_ROOT/build/jack-fifo-bridge"
+if [ -f "$JACK_FIFO_BRIDGE" ]; then
+    echo ""
+    echo "--- Installing jack-fifo-bridge to chroot ---"
+    ssh "$ROOT_SSH" "mkdir -p $REMOTE_CHROOT/usr/local/bin"
+    scp "$JACK_FIFO_BRIDGE" "$ROOT_SSH:$REMOTE_CHROOT/usr/local/bin/jack-fifo-bridge"
+    ssh "$ROOT_SSH" "chmod +x $REMOTE_CHROOT/usr/local/bin/jack-fifo-bridge"
+    echo "jack-fifo-bridge installed"
+fi
+
 if [ ! -f "$PW_HELPER" ]; then
     echo ""
     echo "NOTE: pw-helper not found. Norns must be started manually as root."

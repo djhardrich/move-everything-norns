@@ -143,11 +143,12 @@ chrt -o 0 chroot "$CHROOT" su - move -c '
     fi
 '
 
-echo "--- Configuring scsynth for 44100 Hz ---"
+echo "--- Configuring scsynth for 48000 Hz ---"
 mkdir -p "$NORNS_HOME/norns/sc"
 cat > "$NORNS_HOME/norns/sc/startup.scd" << 'SCDEOF'
-// Auto-generated for Move — force 44100 Hz sample rate
-s.options.sampleRate = 44100;
+// Auto-generated for Move — match PipeWire sample rate
+s.options.sampleRate = 48000;
+s.options.protocol = \udp;
 SCDEOF
 chown 1000:1000 "$NORNS_HOME/norns/sc/startup.scd"
 
@@ -156,6 +157,20 @@ echo "--- Removing incompatible 32-bit SC plugins ---"
 # Move is 64-bit ARM — these crash scsynth with ELFCLASS32 errors.
 rm -rf "$NORNS_HOME/.local/share/SuperCollider/Extensions/PortedPlugins" 2>/dev/null
 echo "  Cleaned incompatible plugins"
+
+echo "--- Configuring SuperCollider include paths ---"
+mkdir -p "$NORNS_HOME/.config/SuperCollider"
+cat > "$NORNS_HOME/.config/SuperCollider/sclang_conf.yaml" << 'SCEOF'
+includePaths:
+    - /home/we/norns/sc/core
+    - /home/we/norns/sc/engines
+    - /home/we/dust
+excludePaths:
+    []
+postInlineWarnings: false
+SCEOF
+chown -R 1000:1000 "$NORNS_HOME/.config"
+echo "  sclang_conf.yaml created"
 
 echo "--- Configuring PipeWire no-RT ---"
 mkdir -p "$CHROOT/etc/pipewire/pipewire.conf.d"

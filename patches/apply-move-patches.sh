@@ -658,19 +658,43 @@ if ! grep -q '#include <string>' crone/src/BufDiskWorker.h 2>/dev/null; then
     sed -i '1s/^/#include <string>\n/' crone/src/BufDiskWorker.h
 fi
 
-# ── 9. Upgrade waf for Python 3.12+ compatibility ──
+# ── 9. Patch Crone.sc to use remote scsynth over UDP ──
+# On Move, scsynth is launched directly by start-norns.sh (sclang's internal
+# shared-memory boot doesn't work in the chroot). Tell Crone to connect to
+# the already-running scsynth over UDP on port 57110.
+echo "  Patching Crone.sc (use remote scsynth on UDP port 57110)"
+sed -i 's/classvar useRemoteServer = false;/classvar useRemoteServer = true;/' sc/core/Crone.sc
+sed -i 's/classvar <>serverPort = 57122;/classvar <>serverPort = 57110;/' sc/core/Crone.sc
+
+# ── 10. Patch matronrc.lua for FIFO-based input (no GPIO devices on Move) ──
+echo "  Replacing matronrc.lua (FIFO-based input)"
+cat > matronrc.lua << 'MATRONEOF'
+function init_norns()
+  _boot.add_io('keys:fifo', {})
+  _boot.add_io('enc:fifo',  {})
+end
+
+init_norns()
+MATRONEOF
+
+# ── 10. Patch crone to not crash on missing physical JACK ports ──
+# On Move there are no physical JACK ports (audio goes through jack-fifo-bridge).
+# Crone's connectAdcPorts/connectDacPorts throw std::runtime_error when ports
+# are missing, crashing the entire audio engine. Wrap them in try/catch.
+echo "  Patching crone/src/main.cpp (skip physical port connections)"
+sed -i 's|m->connectAdcPorts();|try { m->connectAdcPorts(); } catch (const std::exception\& e) { std::cerr << "skipping ADC: " << e.what() << std::endl; }|' crone/src/main.cpp
+sed -i 's|m->connectDacPorts();|try { m->connectDacPorts(); } catch (const std::exception\& e) { std::cerr << "skipping DAC: " << e.what() << std::endl; }|' crone/src/main.cpp
+sed -i 's|sc->connectAdcPorts();|try { sc->connectAdcPorts(); } catch (const std::exception\& e) { std::cerr << "skipping softcut ADC: " << e.what() << std::endl; }|' crone/src/main.cpp
+sed -i 's|sc->connectDacPorts();|try { sc->connectDacPorts(); } catch (const std::exception\& e) { std::cerr << "skipping softcut DAC: " << e.what() << std::endl; }|' crone/src/main.cpp
+
+# ── 10. Upgrade waf for Python 3.12+ compatibility ──
 # waf 2.0.14 uses the 'imp' module removed in Python 3.12
-WAF_VERSION=$(python3 waf --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "0.0.0")
-case "$WAF_VERSION" in
-    2.0.*)
-        echo "  Upgrading waf from $WAF_VERSION to 2.1.5 (Python 3.12+ compat)"
-        curl -fsSL https://waf.io/waf-2.1.5 -o waf
-        chmod +x waf
-        ;;
-    *)
-        echo "  waf $WAF_VERSION — no upgrade needed"
-        ;;
-esac
+# waf 2.0.x uses the 'imp' module removed in Python 3.12+
+# Always replace with 2.1.5 which supports modern Python
+echo "  Installing waf 2.1.5 (Python 3.12+ compat)"
+curl -fsSL https://waf.io/waf-2.1.5 -o waf
+chmod +x waf
+rm -rf .waf3-2.0.*
 
 echo ""
 echo "=== Patches applied ==="

@@ -61,6 +61,11 @@ wait_for() {
 # Launch everything in a single backgrounded subshell
 (
     set +e  # Individual failures handled gracefully — don't exit subshell
+
+    # Ensure PID directory exists (re-create here in case stop script removed it)
+    mkdir -p "$PID_DIR"
+    chmod 777 "$PID_DIR"
+
     # Start dbus system bus (skip if already running)
     chrt -o 0 chroot "$CHROOT" sh -c "
         if ! pgrep -x dbus-daemon >/dev/null 2>&1; then
@@ -119,21 +124,19 @@ wait_for() {
         sleep 2
     fi
 
-    # Start sclang via ws-wrapper (boots scsynth, loads Crone.sc, exposes SC REPL on port 5556)
-    # sclang manages scsynth's lifecycle and the norns engine system
-    if chroot "$CHROOT" which sclang >/dev/null 2>&1; then
+    # Start scsynth directly on JACK (sclang's internal boot uses shared memory
+    # which doesn't work reliably in the chroot — launch scsynth first, then
+    # sclang connects to the already-running server over UDP)
+    if chroot "$CHROOT" which scsynth >/dev/null 2>&1; then
         chrt -o 0 chroot "$CHROOT" su - move -c "
             export XDG_RUNTIME_DIR=$RUNTIME_DIR
             export DBUS_SESSION_BUS_ADDRESS=unix:path=${RUNTIME_DIR}/dbus-pw
-            export QT_QPA_PLATFORM=offscreen
-            cd /home/we/norns
-            nohup pw-jack-physical ./build/ws-wrapper/ws-wrapper ws://*:5556 sclang >/dev/null 2>&1 &
-            echo \$! > /tmp/norns-pids-${SLOT}/sclang.pid
+            nohup pw-jack-physical scsynth -u 57110 -a 128 -i 2 -o 2 -r 48000 -z 128 -Z 128 -l 16 >/dev/null 2>&1 &
+            echo \$! > /tmp/norns-pids-${SLOT}/scsynth.pid
         "
-        # Wait for scsynth to connect to JACK (visible as SuperCollider ports).
-        # norns uses shared memory (not UDP), so we check JACK ports instead.
+        # Wait for scsynth to connect to JACK
         _sc_wait=0
-        while [ $_sc_wait -lt 45 ]; do
+        while [ $_sc_wait -lt 15 ]; do
             if chroot "$CHROOT" su - move -c "
                 export XDG_RUNTIME_DIR=$RUNTIME_DIR
                 export DBUS_SESSION_BUS_ADDRESS=unix:path=${RUNTIME_DIR}/dbus-pw
@@ -144,19 +147,23 @@ wait_for() {
             sleep 1
             _sc_wait=$((_sc_wait+1))
         done
-        [ $_sc_wait -ge 45 ] && echo "WARN: SuperCollider not on JACK after 45s"
-        sleep 8  # Let crone finish CroneDefs + AudioContext init
-    elif chroot "$CHROOT" which scsynth >/dev/null 2>&1; then
-        echo "WARN: sclang not found, starting scsynth directly (no engines)"
+        [ $_sc_wait -ge 15 ] && echo "WARN: SuperCollider not on JACK after 15s"
+    else
+        echo "WARN: no SuperCollider found, softcut-only mode"
+    fi
+
+    # Start sclang via ws-wrapper (loads Crone.sc engine definitions, exposes SC REPL on port 5556)
+    # sclang connects to the already-running scsynth over UDP
+    if chroot "$CHROOT" which sclang >/dev/null 2>&1; then
         chrt -o 0 chroot "$CHROOT" su - move -c "
             export XDG_RUNTIME_DIR=$RUNTIME_DIR
             export DBUS_SESSION_BUS_ADDRESS=unix:path=${RUNTIME_DIR}/dbus-pw
-            nohup pw-jack-physical scsynth -u 57110 -a 128 -i 2 -o 2 -r 44100 -z 128 -Z 128 >/dev/null 2>&1 &
-            echo \$! > /tmp/norns-pids-${SLOT}/scsynth.pid
+            export QT_QPA_PLATFORM=offscreen
+            cd /home/we/norns
+            nohup pw-jack-physical ./build/ws-wrapper/ws-wrapper ws://*:5556 sclang >/dev/null 2>&1 &
+            echo \$! > /tmp/norns-pids-${SLOT}/sclang.pid
         "
-        sleep 3
-    else
-        echo "WARN: no SuperCollider found, softcut-only mode"
+        sleep 8  # Let crone finish CroneDefs + AudioContext init
     fi
 
     # Send /crone/ready OSC to matron after SC initializes.
