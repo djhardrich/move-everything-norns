@@ -12,7 +12,7 @@ MODULE_DIR="/data/UserData/move-anything/modules/tools/norns"
 BUILD_FROM_SOURCE="${NORNS_BUILD_FROM_SOURCE:-0}"
 
 # Pre-built binary URL — update this when publishing a new release
-PREBUILT_URL="${NORNS_PREBUILT_URL:-https://github.com/YOUR_USER/move-everything-norns/releases/latest/download/norns-move-prebuilt.tar.gz}"
+PREBUILT_URL="https://github.com/djhardrich/move-everything-norns/releases/download/v0.2.0/norns-move-prebuilt.tar.gz"
 
 if [ ! -d "$CHROOT/usr" ]; then
     echo "ERROR: Chroot not found at $CHROOT" >&2
@@ -131,11 +131,12 @@ else
         exit 1
     fi
 
-    cd "$NORNS_HOME"
-    curl -fsSL "$PREBUILT_URL" -o /tmp/norns-prebuilt.tar.gz
-    tar xzf /tmp/norns-prebuilt.tar.gz
-    rm -f /tmp/norns-prebuilt.tar.gz
-    chown -R 1000:1000 "$NORNS_HOME/norns" "$NORNS_HOME/maiden"
+    chrt -o 0 chroot "$CHROOT" su - move -c "
+        cd /home/we
+        curl -fsSL '$PREBUILT_URL' -o norns-prebuilt.tar.gz
+        tar xzf norns-prebuilt.tar.gz
+        rm -f norns-prebuilt.tar.gz
+    "
     echo "  Pre-built binaries installed"
 fi
 
