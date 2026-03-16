@@ -45,7 +45,7 @@ chroot "$CHROOT" apt-get install -y --no-install-recommends \
     lua5.3 \
     lua-lpeg lua-cjson lua-socket lua-filesystem \
     lua-posix lua-sec lua-lpeg-patterns \
-    wget curl netcat-openbsd socat rsync \
+    git wget curl netcat-openbsd socat rsync \
     unzip zip sox libsox-fmt-all ffmpeg \
     file bc jq python3-pip
 
