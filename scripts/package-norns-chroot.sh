@@ -80,6 +80,8 @@ chrt -o 0 chroot "$CHROOT" su - move -c '
     cd /home/we/maiden/web
     yarn install
     yarn build
+    mkdir -p /home/we/maiden/app
+    cp -r build /home/we/maiden/app/
 '
 if [ ! -d "$CHROOT/home/we/maiden/app/build" ]; then
     echo "ERROR: Maiden web UI build failed — app/build/ not found" >&2

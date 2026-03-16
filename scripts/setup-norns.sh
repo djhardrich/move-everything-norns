@@ -120,6 +120,8 @@ if [ "$BUILD_FROM_SOURCE" = "1" ]; then
         cd /home/we/maiden/web
         yarn install
         yarn build
+        mkdir -p /home/we/maiden/app
+        cp -r build /home/we/maiden/app/
     '
 else
     echo "--- Downloading pre-built norns binaries ---"
