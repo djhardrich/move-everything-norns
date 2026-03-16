@@ -34,19 +34,23 @@ done
 # Step 1: Reset norns source to upstream
 echo ""
 echo "--- Resetting norns source ---"
-chrt -o 0 chroot "$CHROOT" su - move -c \
-    "cd /home/we/norns && git checkout -- matron/src/ crone/src/ wscript matron/wscript 2>/dev/null"
+chrt -o 0 chroot "$CHROOT" su - move -c '
+    cd /home/we/norns
+    git config --global --add safe.directory /home/we/norns
+    git checkout -- matron/src/ crone/src/ wscript matron/wscript
+'
 
 # Step 2: Apply Move patches
 echo ""
 echo "--- Applying Move patches ---"
 if [ -f "$MODULE_DIR/patches/apply-move-patches.sh" ]; then
-    cp "$MODULE_DIR/patches/apply-move-patches.sh" /tmp/apply-move-patches.sh
+    mkdir -p "$CHROOT/home/we/norns/patches"
+    cp "$MODULE_DIR/patches/apply-move-patches.sh" "$CHROOT/home/we/norns/patches/"
 else
     echo "ERROR: apply-move-patches.sh not found at $MODULE_DIR/patches/" >&2
     exit 1
 fi
-chrt -o 0 chroot "$CHROOT" sh -c "cd /home/we/norns && sh /tmp/apply-move-patches.sh"
+chrt -o 0 chroot "$CHROOT" su - move -c "cd /home/we/norns && sh patches/apply-move-patches.sh"
 
 # Step 3: Clean build
 echo ""
@@ -68,7 +72,23 @@ for bin in \
     echo "  OK: $bin"
 done
 
-# Step 5: Remove incompatible 32-bit SC plugins
+# Step 5: Build Maiden web UI
+echo ""
+echo "--- Building Maiden web UI ---"
+chroot "$CHROOT" npm install -g yarn
+chrt -o 0 chroot "$CHROOT" su - move -c '
+    cd /home/we/maiden/web
+    yarn install
+    yarn build
+'
+if [ ! -d "$CHROOT/home/we/maiden/app/build" ]; then
+    echo "ERROR: Maiden web UI build failed — app/build/ not found" >&2
+    exit 1
+fi
+echo "  OK: maiden/app/build/"
+
+# Step 6: Remove incompatible 32-bit SC plugins
+
 echo ""
 echo "--- Removing 32-bit SC plugins ---"
 chroot "$CHROOT" sh -c '
@@ -77,7 +97,7 @@ chroot "$CHROOT" sh -c '
     done
 '
 
-# Step 6: Package
+# Step 7: Package
 echo ""
 echo "--- Creating release tarball ---"
 cd "$CHROOT/home/we"

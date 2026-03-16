@@ -8,6 +8,7 @@ set -e
 
 CHROOT="/data/UserData/pw-chroot"
 NORNS_HOME="$CHROOT/home/we"
+MODULE_DIR="/data/UserData/move-anything/modules/tools/norns"
 BUILD_FROM_SOURCE="${NORNS_BUILD_FROM_SOURCE:-0}"
 
 # Pre-built binary URL — update this when publishing a new release
@@ -56,8 +57,9 @@ if [ "$BUILD_FROM_SOURCE" = "1" ]; then
         libnanomsg-dev libavahi-compat-libdnssd-dev libudev-dev \
         libglib2.0-dev \
         libncurses-dev libncursesw5-dev \
-        gcc g++ git cmake python3 curl \
-        golang
+        gcc g++ git cmake python3 python3-zombie-imp curl \
+        golang \
+        nodejs npm
 fi
 
 echo "--- Setting up norns user home ---"
@@ -77,17 +79,22 @@ if [ "$BUILD_FROM_SOURCE" = "1" ]; then
         fi
     '
 
+    # Reset patched files before (re-)applying patches
+    chrt -o 0 chroot "$CHROOT" su - move -c '
+        cd /home/we/norns
+        git config --global --add safe.directory /home/we/norns
+        git checkout -- wscript matron/wscript
+    '
+
     # Apply Move patches (FIFO I/O, no GPIO/SPI, etc.)
-    if [ -f "$CHROOT/home/we/norns/patches/apply-move-patches.sh" ]; then
+    if [ -f "$MODULE_DIR/patches/apply-move-patches.sh" ]; then
+        mkdir -p "$CHROOT/home/we/norns/patches"
+        cp "$MODULE_DIR/patches/apply-move-patches.sh" "$CHROOT/home/we/norns/patches/"
         chrt -o 0 chroot "$CHROOT" su - move -c \
             "cd /home/we/norns && sh patches/apply-move-patches.sh"
-    elif [ -f /data/UserData/move-anything/modules/sound_generators/norns/patches/apply-move-patches.sh ]; then
-        cp /data/UserData/move-anything/modules/sound_generators/norns/patches/apply-move-patches.sh \
-            "$CHROOT/tmp/apply-move-patches.sh"
-        chrt -o 0 chroot "$CHROOT" su - move -c \
-            "cd /home/we/norns && sh /tmp/apply-move-patches.sh"
     else
-        echo "WARNING: apply-move-patches.sh not found — norns will not build without it"
+        echo "ERROR: apply-move-patches.sh not found at $MODULE_DIR/patches/" >&2
+        exit 1
     fi
 
     chrt -o 0 chroot "$CHROOT" su - move -c '
@@ -105,6 +112,14 @@ if [ "$BUILD_FROM_SOURCE" = "1" ]; then
         cd maiden
         mkdir -p /home/we/go-cache
         GOCACHE=/home/we/go-cache GOTMPDIR=/home/we/go-cache go build -o maiden .
+    '
+
+    echo "--- Building Maiden web UI ---"
+    chroot "$CHROOT" npm install -g yarn
+    chrt -o 0 chroot "$CHROOT" su - move -c '
+        cd /home/we/maiden/web
+        yarn install
+        yarn build
     '
 else
     echo "--- Downloading pre-built norns binaries ---"
@@ -131,7 +146,7 @@ echo "--- Installing starter scripts ---"
 chrt -o 0 chroot "$CHROOT" su - move -c '
     cd /home/we/dust/code
     if [ ! -d awake ]; then
-        git clone https://github.com/monome/awake.git
+        git clone https://github.com/tehn/awake.git
     fi
     if [ ! -d molly_the_poly ]; then
         git clone https://github.com/markwheeler/molly_the_poly.git
