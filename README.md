@@ -6,7 +6,7 @@ Norns runs inside a Debian chroot alongside Move's native firmware. Audio, MIDI,
 
 ## Quick Install Instructions (tested with Linux and Mac OS and Move 2.0 beta)
 
-1. Install [Move Everything](https://github.com/charlesvestal/move-everything-installer)
+1. Install [Schwung](https://github.com/charlesvestal/schwung-installer)
 2. Run the quick install script:
 
 ```bash
