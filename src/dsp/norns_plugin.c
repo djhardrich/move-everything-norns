@@ -56,6 +56,29 @@
  * mount would then hide the newly created FIFOs. */
 #define FIFO_TMP_DIR  "/tmp"
 
+/* Dedicated live mirror SHM for the raw norns 4-bit framebuffer.
+ * This is separate from Schwung's 1-bit display mirror so the laptop viewer
+ * can prefer grayscale norns frames without affecting the Move OLED path. */
+#define NORNS_DISPLAY_SHM_NAME "/schwung-norns-display-live"
+#define NORNS_DISPLAY_SHM_BYTES (128 * 64 / 2)
+#define NORNS_DISPLAY_MAGIC "NR4SHM1"
+#define NORNS_DISPLAY_FORMAT "gray4_packed"
+
+typedef struct {
+    char magic[8];
+    char format[16];
+    uint64_t last_update_ms;
+    uint32_t version;
+    uint32_t header_size;
+    uint32_t width;
+    uint32_t height;
+    uint32_t bytes_per_frame;
+    uint32_t frame_counter;
+    uint32_t active;
+    uint32_t reserved;
+    uint8_t frame[NORNS_DISPLAY_SHM_BYTES];
+} norns_display_shm_t;
+
 /* ── Logging ──────────────────────────────────────────── */
 
 static const host_api_v1_t *g_host = NULL;
@@ -122,6 +145,8 @@ typedef struct {
     uint8_t screen_buf[4096];          /* latest framebuffer (4-bit packed, 128x64) */
     char screen_hex[2049];             /* 1-bit monochrome hex for get_param */
     int screen_valid;                  /* 1 if screen_hex has data */
+    int display_shm_fd;                /* raw 4-bit remote mirror SHM */
+    norns_display_shm_t *display_shm;
 
     /* Grid emulator FIFO (matron writes LED state, plugin reads) */
     int fifo_grid_fd;
@@ -146,6 +171,63 @@ typedef struct {
 } norns_instance_t;
 
 static int g_instance_counter = 0;
+
+static int open_display_shm(norns_instance_t *inst) {
+    int fd;
+    void *p;
+
+    if (!inst) return -1;
+
+    fd = shm_open(NORNS_DISPLAY_SHM_NAME, O_CREAT | O_RDWR, 0666);
+    if (fd < 0) {
+        pw_log("display shm: shm_open failed");
+        return -1;
+    }
+
+    (void)fchmod(fd, 0666);
+    if (ftruncate(fd, sizeof(norns_display_shm_t)) != 0) {
+        pw_log("display shm: ftruncate failed");
+        close(fd);
+        return -1;
+    }
+
+    p = mmap(NULL, sizeof(norns_display_shm_t),
+             PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (p == MAP_FAILED) {
+        pw_log("display shm: mmap failed");
+        close(fd);
+        return -1;
+    }
+
+    inst->display_shm_fd = fd;
+    inst->display_shm = (norns_display_shm_t *)p;
+    memset(inst->display_shm, 0, sizeof(*inst->display_shm));
+    memcpy(inst->display_shm->magic, NORNS_DISPLAY_MAGIC, sizeof(inst->display_shm->magic));
+    snprintf(inst->display_shm->format, sizeof(inst->display_shm->format), "%s",
+             NORNS_DISPLAY_FORMAT);
+    inst->display_shm->version = 1;
+    inst->display_shm->header_size = (uint32_t)(sizeof(norns_display_shm_t) - NORNS_DISPLAY_SHM_BYTES);
+    inst->display_shm->width = 128;
+    inst->display_shm->height = 64;
+    inst->display_shm->bytes_per_frame = NORNS_DISPLAY_SHM_BYTES;
+    inst->display_shm->active = 0;
+    inst->display_shm->last_update_ms = now_ms();
+    return 0;
+}
+
+static void close_display_shm(norns_instance_t *inst) {
+    if (!inst) return;
+    if (inst->display_shm) {
+        inst->display_shm->active = 0;
+        inst->display_shm->last_update_ms = now_ms();
+        munmap(inst->display_shm, sizeof(norns_display_shm_t));
+        inst->display_shm = NULL;
+    }
+    if (inst->display_shm_fd >= 0) {
+        close(inst->display_shm_fd);
+        inst->display_shm_fd = -1;
+    }
+}
 
 /* ── Error Handling ───────────────────────────────────── */
 
@@ -537,6 +619,14 @@ static void pump_screen(norns_instance_t *inst) {
         } else {
             break;
         }
+    }
+    if (inst->display_shm && (got_frame || inst->screen_valid)) {
+        if (got_frame) {
+            memcpy(inst->display_shm->frame, inst->screen_buf, NORNS_DISPLAY_SHM_BYTES);
+            inst->display_shm->frame_counter++;
+        }
+        inst->display_shm->last_update_ms = now_ms();
+        inst->display_shm->active = 1;
     }
     if (got_frame) {
         static const char hex[] = "0123456789abcdef";
@@ -988,6 +1078,8 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
     inst->midi_out_buf_len = 0;
     inst->fifo_screen_fd = -1;
     inst->screen_valid = 0;
+    inst->display_shm_fd = -1;
+    inst->display_shm = NULL;
     inst->fifo_grid_fd = -1;
     inst->grid_valid = 0;
     memset(inst->grid_leds, 0, 128);
@@ -1045,6 +1137,8 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
 
     /* Start PipeWire in background — don't block or fail on error */
     start_pw_chroot(inst);
+    if (open_display_shm(inst) != 0)
+        pw_log("display shm unavailable; grayscale mirror disabled");
 
     pw_log("create_instance: OK");
     return inst;
@@ -1058,6 +1152,7 @@ static void v2_destroy_instance(void *instance) {
     stop_pw_chroot(inst);
     close_midi_fifos(inst);
     close_fifo(inst);
+    close_display_shm(inst);
 
     if (inst->fifo_screen_fd >= 0) close(inst->fifo_screen_fd);
     if (inst->fifo_grid_fd >= 0) close(inst->fifo_grid_fd);
